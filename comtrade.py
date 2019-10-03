@@ -189,5 +189,11 @@ if __name__ == '__main__':
         p = zf.loc[code,]
         t = round(s / p * 1000, 1)
         print("Totals:", t, s, p)
+        
+        
+    wheat = exporters(100199).head(10)
+    
+    # /api/get?max=500&type=C&freq=A&px=HS&ps=2018&r=all&p=0&rg=all&cc=190531%2C190532
+    #biscuit	190531, 190532
     
          
