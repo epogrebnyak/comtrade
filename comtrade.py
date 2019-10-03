@@ -2,14 +2,14 @@
 
 Usage:
     df1 = country_export(reporter=276).dataframe('code') #all exports at HS 6-gigit level
-    df2 = exporters_by_code(3102).dataframe() # Urea exports by country
+    df2 = exporters(3102).dataframe() # Urea exports by country
     
 Features:
    - requests_cache cache the calls, prevents overloading the API
    - 
     
 Restrictions:
- - I looked with commodity trade, not services
+ - I looked with CommodityTrade trade, not services
  - year by default is 2018
  
 Usage advice:
@@ -30,50 +30,68 @@ import requests_cache
 
 requests_cache.install_cache('comtrade_cache')
 
-ENDPOINT = 'http', 'comtrade.un.org', '/api/get'
-
-
-def make_url(query_string: str, endpoint=ENDPOINT):
-    scheme, netloc, path = endpoint    
-    return urlunsplit((scheme, netloc, path, query_string, ''))
-
-
 @dataclass
-class CommodityQuery:
-    reporter: int
-    partner: int
-    year: int
-    code: str
+class Endpoint:
+    query_string: str= ''
+    scheme: str = 'http'
+    netloc: str = 'comtrade.un.org'
+    path: str = '/api/get'
     
-    def _raw(self, direction: str):
-        return RawQuery(r=self.repoter,
-                        p=self.partner,
-                        ps=self.year,
-                        rg=dict(exp=2, imp=1)[direction.lower()[:2]],
-                        cc=self.code)
+    def url(self):
+        return urlunsplit((self.scheme, 
+                           self.netloc, 
+                           self.path, 
+                           self.query_string, 
+                           ''))
+        
+        
+from enum import Enum 
+class Direction(Enum):
+    Export = 2
+    Import = 1
+
 
 @dataclass
-class CommodityExport:    
-    def raw(self):
-        return self._raw('export')
+class CommodityTrade:
+    code: int = 'AG6'
+    year: int = 2018
+    reporter: int = 'all'
+    partner: int = 0    
+    
+    def set_reporter(self, reporter: int):
+        self.reporter = reporter
+        return self
+    
+    def raw_query(self, direction: Direction):
+        return RawQuery(rg=direction.value, 
+                        r=self.reporter, 
+                        p=self.partner, 
+                        cc=str(self.code), 
+                        ps=self.year)
 
+    def raw_query_export(self):
+      return self.raw_query(Direction.Export)
+           
+    def raw_query_import(self):
+      return self.raw_query(Direction.Export)    
+    
+    def get_export(self):
+      return self.raw_query_export().response()
 
-@dataclass
-class CommodityImport:    
-    def raw(self):
-        return self._raw('import')
-
+    def get_import(self):
+      return self.raw_query_import().response()
+  
 
 @dataclass
 class RawQuery:
+    rg: int # 1 (imports) and 2 (exports)
     r: int # reporter
     p: int # partnter  
-    rg: int # 1 (imports) and 2 (exports)
-    ps: int = 2018
+    cc: str = 'AG6'
+    ps: int = 2018    
     freq: str = 'A'
     type: str = 'C' # C Commodities 
     px: str = 'HS'
-    cc: str = 'AG6'
     max: int = 50_000 
     
     @property
@@ -82,44 +100,31 @@ class RawQuery:
     
     @property
     def url(self):
-        return make_url(self.query_string)   
+        return Endpoint(query_string=self.query_string).url()   
     
     def get_json(self):
         return requests.get(self.url).json()        
     
     def response(self):
         return Response(self.get_json())
-
-
-def select(*arg, **kwarg):
-    return RawQuery(*arg, **kwarg).response()
-
-
-def country_export(reporter, partner=0, year=2018):
-    return select(reporter, partner, rg=2, ps=year)
-
-
-def country_import(reporter, partner=0, year=2018):
-    return select(reporter, partner, rg=1, ps=year)
-
-
-def exporters_by_code(code, year=2018):
-    return select(r='all', p=0, rg=2, cc=str(code))
-
     
 COL_DICT = dict(yr='year',
      rgDesc = 'dir',
      rtTitle='reporter',
      ptTitle='partner',
      cmdCode='code', 
-     NetWeight='tton',
-     TradeValue='musd',
+     NetWeight='kg',
+     TradeValue='usd',
      cmdDescE='desc')    
 
 
 @dataclass
 class Response:
     dict: dict   
+
+    @property
+    def dataset(self):
+        return self.dict['dataset']
     
     @property
     def info(self):
@@ -127,40 +132,49 @@ class Response:
     
     def count(self):
         return self.info['count']['value']
-
-    @property
-    def dataset(self):
-        return self.dict['dataset']
     
     def dataframe(self, col_dict=COL_DICT, index_key=None):
         df = pd.DataFrame(self.dataset)[col_dict.keys()] \
                  .rename(columns=COL_DICT) \
-                 .sort_values('musd', ascending=False)
+                 .sort_values('usd', ascending=False)
         if index_key:
             df = df.set_index(index_key)
-        df['musd'] = df.musd.divide(10**6).round(1)
-        df['tton'] = df.tton.divide(10**6).round(1)
-        df['price'] = (df.musd / df.tton).multiply(1000).round(1)    
+        df['musd'] = df.usd.divide(10**6).round(1)
+        df['tton'] = df.kg.divide(10**6).round(1)
+        df['price'] = (df.usd / df.kg).multiply(1000).round(1)    
+        del df['usd']
+        del df['kg']
         return df
- 
+
+
+def exporters(code, year=2018):
+     return CommodityTrade(code, year).get_export().dataframe()   
+
+
+def importers(code, year=2018):
+     return CommodityTrade(code, year).get_import().dataframe()  
+
+def estimate_price(df):
+    df = df.query('tton > 0')
+    df = df.groupby('code').sum()
+    return (df.musd / df.tton).multiply(1000).round(1)
+    
+    
 if __name__ == '__main__':
     
     # German exports to the world in 2018
-    de = country_export(reporter=276, partner=0, year=2018)
+    de = CommodityTrade(reporter=276).get_export()
     assert de.count() == de.dataframe().shape[0]
 
     # Firiliser exports by country
-    amm =  exporters_by_code(code=2814).dataframe()
-    nit = exporters_by_code(code=3102, year=2018).dataframe()
-    pho = exporters_by_code(code=3103).dataframe()
-    pot = exporters_by_code(code=3104).dataframe()
-    mix = exporters_by_code(code=3105).dataframe()
+    amm = exporters(code=2814)
+    nit = exporters(code=3102)
+    pho = exporters(code=3103)
+    pot = exporters(code=3104)
+    mix = exporters(code=3105)
     
     df = pd.concat([amm, nit, pho, pot, mix])
-    df = df.query('tton > 0')
-    df = df.groupby('code').sum()
-    df['price'] = (df.musd / df.tton).multiply(1000).round(1)
-    zf = df.price
+    zf =  estimate_price(df)
     print (zf)
     
     for df in amm, nit, pho, pot, mix:
