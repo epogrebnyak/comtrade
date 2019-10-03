@@ -1,4 +1,27 @@
-from urllib.parse import urlencode, urlsplit, urlunsplit, parse_qs
+"""Access UN Comtrade statistics from a python script.
+
+Usage:
+    df1 = country_export(reporter=276).dataframe('code') #all exports at HS 6-gigit level
+    df2 = exporters_by_code(3102).dataframe() # Urea exports by country
+    
+Features:
+   - requests_cache cache the calls, prevents overloading the API
+   - 
+    
+Restrictions:
+ - I looked with commodity trade, not services
+ - year by default is 2018
+ 
+Usage advice:
+ - make a query at web interface, then check API for it    
+ - exporter data may be more reliable that importer
+
+API codumentation:
+    https://comtrade.un.org/Data/doc/api/
+    
+"""    
+
+from urllib.parse import urlencode, urlunsplit
 from dataclasses import dataclass
 import requests
 import pandas as pd
@@ -8,20 +31,37 @@ import requests_cache
 requests_cache.install_cache('comtrade_cache')
 
 ENDPOINT = 'http', 'comtrade.un.org', '/api/get'
-API_DOCS = 'https://comtrade.un.org/Data/doc/api/'
+
 
 def make_url(query_string: str, endpoint=ENDPOINT):
     scheme, netloc, path = endpoint    
     return urlunsplit((scheme, netloc, path, query_string, ''))
 
-assert make_url('abc=1') == 'http://comtrade.un.org/api/get?abc=1'
 
-url1 = "http://comtrade.un.org/api/get?max=50000&type=C&freq=A&px=HS&ps=2018&r=276&p=0&rg=2&cc=AG6"
-qs1 = "max=500&type=C&freq=A&px=HS&ps=2018&r=all&p=0&rg=2&cc=3102"
+@dataclass
+class CommodityQuery:
+    reporter: int
+    partner: int
+    year: int
+    code: str
+    
+    def _raw(self, direction: str):
+        return RawQuery(r=self.repoter,
+                        p=self.partner,
+                        ps=self.year,
+                        rg=dict(exp=2, imp=1)[direction.lower()[:2]],
+                        cc=self.code)
 
-def extract_query(url):
-    return parse_qs(urlsplit(url).query)
+@dataclass
+class CommodityExport:    
+    def raw(self):
+        return self._raw('export')
 
+
+@dataclass
+class CommodityImport:    
+    def raw(self):
+        return self._raw('import')
 
 
 @dataclass
@@ -50,16 +90,21 @@ class RawQuery:
     def response(self):
         return Response(self.get_json())
 
-def export_query_ag6(reporter, partner, year=2018):
-    return RawQuery(reporter, partner, rg=2, ps=year)
 
-def import_query_ag6(reporter, partner, year=2018):
-    return RawQuery(reporter, partner, rg=1, ps=year)
-
-def commodity_exporters(code, year=2018):
-    return RawQuery(r='all', p=0, rg=2, cc=str(code))
+def select(*arg, **kwarg):
+    return RawQuery(*arg, **kwarg).response()
 
 
+def country_export(reporter, partner=0, year=2018):
+    return select(reporter, partner, rg=2, ps=year)
+
+
+def country_import(reporter, partner=0, year=2018):
+    return select(reporter, partner, rg=1, ps=year)
+
+
+def exporters_by_code(code, year=2018):
+    return select(r='all', p=0, rg=2, cc=str(code))
 
     
 COL_DICT = dict(yr='year',
@@ -67,9 +112,10 @@ COL_DICT = dict(yr='year',
      rtTitle='reporter',
      ptTitle='partner',
      cmdCode='code', 
-     NetWeight='kg',
-     TradeValue='usd',
+     NetWeight='tton',
+     TradeValue='musd',
      cmdDescE='desc')    
+
 
 @dataclass
 class Response:
@@ -77,7 +123,7 @@ class Response:
     
     @property
     def info(self):
-        return r.dict['validation']
+        return self.dict['validation']
     
     def count(self):
         return self.info['count']['value']
@@ -86,63 +132,48 @@ class Response:
     def dataset(self):
         return self.dict['dataset']
     
-    def dataframe(self, col_dict = COL_DICT):
+    def dataframe(self, col_dict=COL_DICT, index_key=None):
         df = pd.DataFrame(self.dataset)[col_dict.keys()] \
-                 .set_index('cmdCode') \
                  .rename(columns=COL_DICT) \
-                 .sort_values('usd', ascending=False)
-        df['price'] = (df.usd/df.kg*1000).round(1)
+                 .sort_values('musd', ascending=False)
+        if index_key:
+            df = df.set_index(index_key)
+        df['musd'] = df.musd.divide(10**6).round(1)
+        df['tton'] = df.tton.divide(10**6).round(1)
+        df['price'] = (df.musd / df.tton).multiply(1000).round(1)    
         return df
+ 
+if __name__ == '__main__':
     
-"""
-pfCode                                                 H5
-yr                                                   2018
-period                                               2018
-periodDesc                                           2018
-aggrLevel                                               6
-IsLeaf                                                  1
-rgCode                                                  2
-rgDesc                                             Export
-rtCode                                                276
-rtTitle                                           Germany
-rt3ISO                                                DEU
-ptCode                                                  0
-ptTitle                                             World
-pt3ISO                                                WLD
-ptCode2                                              None
-ptTitle2                                                 
-pt3ISO2                                                  
-cstCode                                                  
-cstDesc                                                  
-motCode                                                  
-motDesc                                                  
-cmdCode                                            010121
-cmdCode         Horses; live, pure-bred breeding animals
-qtCode                                                  5
-qtDesc                                    Number of items
-qtAltCode                                            None
-qtAltDesc                                                
-TradeQuantity                                        1308
-AltQuantity                                          None
-NetWeight                                          631468
-GrossWeight                                          None
-TradeValue                                       55011890
-CIFValue                                             None
-FOBValue                                             None
-estCode                                                 0
-Name: 0, dtype: object
-"""    
+    # German exports to the world in 2018
+    de = country_export(reporter=276, partner=0, year=2018)
+    assert de.count() == de.dataframe().shape[0]
+
+    # Firiliser exports by country
+    amm =  exporters_by_code(code=2814).dataframe()
+    nit = exporters_by_code(code=3102, year=2018).dataframe()
+    pho = exporters_by_code(code=3103).dataframe()
+    pot = exporters_by_code(code=3104).dataframe()
+    mix = exporters_by_code(code=3105).dataframe()
     
+    df = pd.concat([amm, nit, pho, pot, mix])
+    df = df.query('tton > 0')
+    df = df.groupby('code').sum()
+    df['price'] = (df.musd / df.tton).multiply(1000).round(1)
+    zf = df.price
+    print (zf)
     
-
-#German exports to the world in 2018
-q = export_query_ag6(reporter=276, partner=0, year=2018)
-r = q.response()
-assert r.count() == 5137
-
-ur = commodity_exporters(code=3102, year=2018).response().dataframe()
-
-a = extract_query(url1)
-b = extract_query(q.url)
-assert a == b
-
+    for df in amm, nit, pho, pot, mix:
+        code = df.code[0]
+        print (code, df.desc[0])                
+        del df['desc']
+        del df['dir']
+        del df['partner']
+        del df['year']
+        print(df.head(10))
+        s = round(df.musd.sum() / 1000, 1)
+        p = zf.loc[code,]
+        t = round(s / p * 1000, 1)
+        print("Totals:", t, s, p)
+    
+         
