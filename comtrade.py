@@ -25,6 +25,7 @@ from urllib.parse import urlencode, urlunsplit
 from dataclasses import dataclass
 import requests
 import pandas as pd
+import time
 
 import requests_cache
 
@@ -109,13 +110,13 @@ class RawQuery:
         return Response(self.get_json())
     
 COL_DICT = dict(yr='year',
-     rgDesc = 'dir',
-     rtTitle='reporter',
-     ptTitle='partner',
-     cmdCode='code', 
-     NetWeight='kg',
-     TradeValue='usd',
-     cmdDescE='desc')    
+     rgDesc  = 'dir',
+     rtTitle = 'reporter',
+     ptTitle = 'partner',
+     cmdCode = 'code', 
+     NetWeight  = 'kg',
+     TradeValue = 'usd',
+     cmdDescE   = 'desc')    
 
 
 @dataclass
@@ -148,8 +149,8 @@ class Response:
 
 
 def exporters(code, year=2018):
-     return CommodityTrade(code, year).get_export().dataframe()   
-
+    time.sleep(1)
+    return CommodityTrade(code, year).get_export().dataframe()   
 
 def importers(code, year=2018):
      return CommodityTrade(code, year).get_import().dataframe()  
@@ -158,15 +159,33 @@ def estimate_price(df):
     df = df.query('tton > 0')
     df = df.groupby('code').sum()
     return (df.musd / df.tton).multiply(1000).round(1)
+
+def price(df):
+    return round((df.musd / df.tton)*1000, 1)
     
-    
+def exporters_by_list(codes, year=2018):
+    df = pd.concat([exporters(code, year) for code in codes])
+    df = df.query('tton>0').groupby('reporter').sum()                 
+    df['price'] = (df.musd / df.tton).multiply(1000).round(1)
+    return df.query('musd>0.5').sort_values('musd', ascending=False)
+
+def desc(codes):
+    if not isinstance(codes,list):
+        codes = [codes]
+    return [exporters(code).desc.iloc[0] for code in codes]   
+
+def average_price(codes, n=10):    
+    df = exporters_by_list(codes).head(n).sum()
+    return price(df)
+
+
 if __name__ == '__main__':
     
     # German exports to the world in 2018
     de = CommodityTrade(reporter=276).get_export()
     assert de.count() == de.dataframe().shape[0]
 
-    # Firiliser exports by country
+    # Fertiliser exports by country
     amm = exporters(code=2814)
     nit = exporters(code=3102)
     pho = exporters(code=3103)
@@ -174,7 +193,7 @@ if __name__ == '__main__':
     mix = exporters(code=3105)
     
     df = pd.concat([amm, nit, pho, pot, mix])
-    zf =  estimate_price(df)
+    zf = estimate_price(df)
     print (zf)
     
     for df in amm, nit, pho, pot, mix:
@@ -188,12 +207,61 @@ if __name__ == '__main__':
         s = round(df.musd.sum() / 1000, 1)
         p = zf.loc[code,]
         t = round(s / p * 1000, 1)
-        print("Totals:", t, s, p)
+        print("Total: apparent", t, "mln ton worth", s, "bln USD at", p, "USD/t")
         
-        
-    wheat = exporters(100199).head(10)
+    wheat_ = exporters(1001).head(10) # 'Wheat and meslin'
+    cereals_ = exporters(10).head(10) # 'Cereals'
+    biscuits_ = exporters_by_list([190531, 190532]).query('musd>100')
+    assert desc([190531, 190532]) == \
+       ['Food preparations; sweet biscuits, whether or not containing cocoa', 
+        'Food preparations; waffles and wafers, whether or not containing cocoa']       
+       
+       
+    groups = dict(wheat=[100199, 100119],
+                  seed=[100111, 100191],
+                  flour=[110100],
+                  groat=[110311],
+                  byproduct=[230230,230310],
+                  starch_etc=[110429,110430,110811,110320],
+                  gluten=[110900],
+                  infant=[190110],
+                  dough=[190120,190590],
+                  flakes=[190410,190420,190430],
+                  biscuit=[190531,190532],
+                  pet_food=[230910],
+                  feed=[230990],
+                  pasta=[190211,190219,190220,190230],
+                  beer=[220300],
+                  ethyl=[220720],
+                  vodka=[220860])
+    ga = {k:average_price(v) for k,v in groups.items()}
+    gd = {k:desc(v) for k,v in groups.items()}
     
-    # /api/get?max=500&type=C&freq=A&px=HS&ps=2018&r=all&p=0&rg=all&cc=190531%2C190532
-    #biscuit	190531, 190532
+    wheat     = average_price([100199, 100119])
+    seed      = average_price([100111, 100191])
+    flour     = average_price([110100])
+    groat     = average_price([110311])
+    print(wheat, seed, flour, groat)
     
+    byproduct = average_price([230230,230310])
+    starch_etc= average_price([110429,110430,110811,110320])
+    gluten    = average_price([110900])
+    print(byproduct, starch_etc, gluten)
+    
+    feed      = average_price([230990])
+    pet_food  = average_price([230910])
+    print(feed, pet_food)
+    
+    flakes    = average_price([190410,190420,190430])
+    dough     = average_price([190120,190590])
+    pasta     = average_price([190211,190219,190220,190230])
+    biscuit   = average_price([190531,190532])
+    infant    = average_price([190110])
+    print(flakes, dough, pasta, biscuit, infant)
+    
+    beer      = average_price([220300])
+    ethyl     = average_price([220720])
+    vodka     = average_price([220860])
+    print(beer, ethyl, vodka)
+         
          
